@@ -102,14 +102,6 @@ void pcount_reset() {
       "csrw mhpmcounter31h, x0\n");
 }
 
-void pcount_enable(int enable) {
-  // Note cycle is disabled with everything else
-  unsigned int inhibit_val = enable ? 0x0 : 0xFFFFFFFF;
-  // mucounteren == mcountinhibit but binutils doesn't seem to known the
-  // mcountinhibit name
-  asm volatile("csrw  mucounteren, %0\n" : : "r"(inhibit_val));
-}
-
 unsigned int get_mepc() {
   uint32_t result;
   __asm__ volatile("csrr %0, mepc;" : "=r"(result));
@@ -131,11 +123,63 @@ unsigned int get_mtval() {
 void simple_exc_handler(void) {
   puts("EXCEPTION!!!\n");
   puts("============\n");
-  puts("MEPC:   0x%0X");puthex(get_mepc());
-  puts("\nMCAUSE: 0x%0X");puthex(get_mcause());
-  puts("\nMTVAL:  0x%0X");puthex(get_mtval());
+  puts("MEPC:   0x");
+  puthex(get_mepc());
+  puts("\nMCAUSE: 0x");
+  puthex(get_mcause());
+  puts("\nMTVAL:  0x");
+  puthex(get_mtval());
   putchar('\n');
   sim_halt();
 
   while(1);
+}
+
+volatile uint64_t time_elapsed;
+uint64_t time_increment;
+
+inline static void increment_timecmp(uint64_t time_base) {
+  uint64_t current_time = timer_read();
+  current_time += time_base;
+  timecmp_update(current_time);
+}
+
+void timer_enable(uint64_t time_base) {
+  time_elapsed = 0;
+  time_increment = time_base;
+  // Set timer values
+  increment_timecmp(time_base);
+  // enable timer interrupt
+  asm volatile("csrs  mie, %0\n" : : "r"(0x80));
+  // enable global interrupt
+  asm volatile("csrs  mstatus, %0\n" : : "r"(0x8));
+}
+
+void timer_disable(void) { asm volatile("csrc  mie, %0\n" : : "r"(0x80)); }
+
+uint64_t timer_read(void) {
+  uint32_t current_timeh;
+  uint32_t current_time;
+  // check if time overflowed while reading and try again
+  do {
+    current_timeh = DEV_READ(TIMER_BASE + TIMER_MTIMEH, 0);
+    current_time = DEV_READ(TIMER_BASE + TIMER_MTIME, 0);
+  } while (current_timeh != DEV_READ(TIMER_BASE + TIMER_MTIMEH, 0));
+  uint64_t final_time = ((uint64_t)current_timeh << 32) | current_time;
+  return final_time;
+}
+
+void timecmp_update(uint64_t new_time) {
+  DEV_WRITE(TIMER_BASE + TIMER_MTIMECMP, -1);
+  DEV_WRITE(TIMER_BASE + TIMER_MTIMECMPH, new_time >> 32);
+  DEV_WRITE(TIMER_BASE + TIMER_MTIMECMP, new_time);
+}
+
+uint64_t get_elapsed_time(void) { return time_elapsed; }
+
+void simple_timer_handler(void) __attribute__((interrupt));
+
+void simple_timer_handler(void) {
+  increment_timecmp(time_increment);
+  time_elapsed++;
 }
